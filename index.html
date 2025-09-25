@@ -2,11 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>Road Collector</title>
+  <title>Road Health Collector</title>
   <style>body{font-family:sans-serif;margin:20px}button{margin:6px}</style>
 </head>
 <body>
-  <h2>📱 Road Data Collector</h2>
+  <h2>📱 Road Health Collector</h2>
   <button id="perm">Enable Sensors</button>
   <button id="start" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
@@ -14,12 +14,24 @@
 
 <script>
 const SUPABASE_URL = "https://jnjhkmlvfmynxyjypyie.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuamhrbWx2Zm15bnh5anlweWllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyNTA4MjMsImV4cCI6MjA3MzgyNjgyM30.Xp1Y3UvqQhbuxP3KV_1dtW8Zff-yy0fA94G5O3wecOo";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuamhrbWx2Zm15bnh5anlweWllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyNTA4MjMsImV4cCI6MjA3MzgyNjgyM30.Xp1Y3UvqQhbuxP3KV_1dtW8Zff-yy0fA94G5O3wecOo"; // ⚠️ Use anon key, not service key
 const TABLE_LOC = "bus_location";
-const TABLE_POT = "potholes";
+const TABLE_HEALTH = "road_health";
 
 const deviceId = "bus-" + Math.random().toString(36).slice(2,8);
-let geoWatch=null, lastMag=null, lastLoc=null;
+let geoWatch=null, lastLoc=null;
+let lastMag=null;
+let segmentStart=null;
+let accBuffer=[];
+
+// Utility: Haversine distance in meters
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = deg => deg*Math.PI/180;
+  const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
 
 function log(msg){
   document.getElementById("log").textContent += msg+"\n";
@@ -36,17 +48,43 @@ document.getElementById("start").onclick = () => {
   document.getElementById("start").disabled=true;
   document.getElementById("stop").disabled=false;
 
-  // GPS stream → bus_location
   geoWatch = navigator.geolocation.watchPosition(pos=>{
-    lastLoc = {lat:pos.coords.latitude, lon:pos.coords.longitude, speed:pos.coords.speed, heading:pos.coords.heading};
+    const newLoc = {lat:pos.coords.latitude, lon:pos.coords.longitude, speed:pos.coords.speed, heading:pos.coords.heading};
+
+    // Save bus location for live tracking
     sendToSupabase(TABLE_LOC,{
-      device_id:deviceId, lat:lastLoc.lat, lon:lastLoc.lon,
-      speed:lastLoc.speed, heading:lastLoc.heading, ts:new Date().toISOString()
+      device_id:deviceId, lat:newLoc.lat, lon:newLoc.lon,
+      speed:newLoc.speed, heading:newLoc.heading, ts:new Date().toISOString()
     });
-    log(`Bus @ ${lastLoc.lat},${lastLoc.lon}`);
+
+    if(lastLoc){
+      const d = haversine(lastLoc.lat,lastLoc.lon,newLoc.lat,newLoc.lon);
+      if(!segmentStart) segmentStart = lastLoc;
+
+      // if moved ≥10m → compute health
+      if(haversine(segmentStart.lat,segmentStart.lon,newLoc.lat,newLoc.lon) >= 10){
+        if(accBuffer.length>0){
+          const avgDelta = accBuffer.reduce((a,b)=>a+b,0)/accBuffer.length;
+          let score="good";
+          if(avgDelta>2) score="medium";
+          if(avgDelta>4) score="bad";
+
+          sendToSupabase(TABLE_HEALTH,{
+            device_id:deviceId,
+            lat_start:segmentStart.lat, lon_start:segmentStart.lon,
+            lat_end:newLoc.lat, lon_end:newLoc.lon,
+            score:score, ts:new Date().toISOString()
+          });
+          log(`Road segment ${score} (${avgDelta.toFixed(2)})`);
+
+          accBuffer=[];
+          segmentStart=newLoc;
+        }
+      }
+    }
+    lastLoc=newLoc;
   }, err=>log("GPS error "+err.message), {enableHighAccuracy:true});
 
-  // Motion stream → potholes
   window.addEventListener("devicemotion", handleMotion);
 };
 
@@ -59,36 +97,29 @@ document.getElementById("stop").onclick = () => {
 
 function handleMotion(e){
   const acc=e.accelerationIncludingGravity;
-  if(!acc || !lastLoc) return;
+  if(!acc) return;
   const mag=Math.sqrt(acc.x**2+acc.y**2+acc.z**2);
-  let severity=null;
-
   if(lastMag!==null){
-    const delta=Math.abs(mag-lastMag);
-    if(delta>6) severity="high";
-    else if(delta>3) severity="medium";
+    accBuffer.push(Math.abs(mag-lastMag));
+    if(accBuffer.length>50) accBuffer.shift(); // limit buffer
   }
   lastMag=mag;
-  if(severity){
-    sendToSupabase(TABLE_POT,{
-      device_id:deviceId, lat:lastLoc.lat, lon:lastLoc.lon,
-      severity:severity, ts:new Date().toISOString()
-    });
-    log(`Pothole ${severity} at ${lastLoc.lat},${lastLoc.lon}`);
-  }
 }
 
-function sendToSupabase(table,row){
-  fetch(`${SUPABASE_URL}/rest/v1/${table}`,{
-    method:"POST",
-    headers:{
-      "apikey":SUPABASE_KEY,
-      "Authorization":"Bearer "+SUPABASE_KEY,
-      "Content-Type":"application/json",
-      "Prefer":"return=minimal"
-    },
-    body:JSON.stringify(row)
-  });
+async function sendToSupabase(table,row){
+  try{
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`,{
+      method:"POST",
+      headers:{
+        "apikey":SUPABASE_KEY,
+        "Authorization":"Bearer "+SUPABASE_KEY,
+        "Content-Type":"application/json",
+        "Prefer":"return=minimal"
+      },
+      body:JSON.stringify(row)
+    });
+    if(!res.ok) log(`Supabase error ${res.status}`);
+  }catch(err){ log("Network error "+err.message); }
 }
 </script>
 </body>
