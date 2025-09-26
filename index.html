@@ -1,140 +1,101 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Collector — Bus Simulator (Push to Supabase)</title>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
-  <style>body{font-family:sans-serif;padding:20px}button{padding:8px 12px}</style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Bus Collector - TheRoadApp</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #121212; color: #f5f5f5; }
+    button { padding: 14px 20px; border: none; border-radius: 8px; margin-top: 20px; cursor: pointer; font-weight: bold; }
+    #start { background: #007BFF; color: #fff; }
+    #stop { background: #dc3545; color: #fff; display: none; }
+    #log { margin-top: 20px; font-size: 0.9rem; white-space: pre-wrap; background:#1e1e1e; padding:10px; border-radius:8px; }
+  </style>
 </head>
 <body>
-  <h2>Collector — Bus Simulator</h2>
-  <p>Simulates multiple buses and sends live data every 1s to Supabase.</p>
-  <label>Supabase URL: <input id="supabaseUrl" size="40" value="https://jnjhkmlvfmynxyjypyie.supabase.co"></label><br>
-  <label>Supabase ANON KEY: <input id="supabaseKey" size="80" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuamhrbWx2Zm15bnh5anlweWllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyNTA4MjMsImV4cCI6MjA3MzgyNjgyM30.Xp1Y3UvqQhbuxP3KV_1dtW8Zff-yy0fA94G5O3wecOo"></label><br>
-  <button id="startBtn">Start Simulation</button>
-  <button id="stopBtn" disabled>Stop</button>
-  <pre id="log" style="height:300px;overflow:auto;background:#f7f7f7;padding:10px"></pre>
+  <h1>🚌 Bus Data Collector</h1>
+  <p>This app will capture GPS + accelerometer data every few seconds and send it to Supabase.</p>
+  <button id="start">Start Collecting</button>
+  <button id="stop">Stop</button>
+  <div id="log">Idle...</div>
 
-<script>
-(async () => {
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const logEl = document.getElementById('log');
+  <script type="module">
+    // === CONFIG ===
+    const SUPABASE_URL = "https://jnjhkmlvfmynxyjypyie.supabase.co";
+    const SERVICE_KEY = "YOUR_SERVICE_ROLE_KEY"; // ⚠️ Replace with service_role key
 
-  function log(s){ logEl.textContent = new Date().toLocaleTimeString() + " | " + s + "\n" + logEl.textContent; }
+    let collecting = false;
+    let watchId = null;
+    let motionData = { x:0, y:0, z:0 };
 
-  let intervalId = null;
-  let aggregateCounter = 0;
-
-  // Define demo routes as arrays of coordinates (lat,lon)
-  const routes = {
-    "R1": [
-      [26.8467, 80.9462],
-      [26.8500, 80.9510],
-      [26.8550, 80.9565],
-      [26.8620, 80.9630]
-    ],
-    "R2": [
-      [26.8400, 80.9400],
-      [26.8450, 80.9450],
-      [26.8520, 80.9520],
-      [26.8600, 80.9590]
-    ]
-  };
-
-  function lerp(a, b, t){
-    return a + (b - a) * t;
-  }
-
-  function pointAlong(route, progress){
-    if(progress <= 0) return route[0];
-    if(progress >= 1) return route[route.length-1];
-    const totalSegs = route.length - 1;
-    const seg = Math.floor(progress * totalSegs);
-    const t = (progress * totalSegs) - seg;
-    const p1 = route[seg];
-    const p2 = route[seg+1];
-    return [lerp(p1[0], p2[0], t), lerp(p1[1], p2[1], t)];
-  }
-
-  function createSupabaseClient(){
-    const url = document.getElementById('supabaseUrl').value.trim();
-    const key = document.getElementById('supabaseKey').value.trim();
-    return supabase.createClient(url, key);
-  }
-
-  startBtn.onclick = () => {
-    const supabase = createSupabaseClient();
-
-    // Create N simulated buses (mix routes)
-    const buses = [
-      { id: "bus-101", routeId: "R1", prog: 0, speedKmph: 25 },
-      { id: "bus-102", routeId: "R1", prog: 0.2, speedKmph: 20 },
-      { id: "bus-201", routeId: "R2", prog: 0.1, speedKmph: 30 }
-    ];
-
-    log("Starting simulation with buses: " + buses.map(b=>b.id).join(", "));
-
-    intervalId = setInterval(async () => {
-      try {
-        const now = new Date().toISOString();
-        for(const bus of buses){
-          // progress increases based on speed — this is just approximated
-          const route = routes[bus.routeId];
-          // increment progress by small fraction, scale by speed
-          bus.prog += (bus.speedKmph / 3600) * 0.0006; // tuned fudge to move
-          if(bus.prog > 1) bus.prog = 0;
-
-          const pos = pointAlong(route, bus.prog);
-          const lat = pos[0] + (Math.random()-0.5)*0.00002;
-          const lon = pos[1] + (Math.random()-0.5)*0.00002;
-          const speed = bus.speedKmph * (0.9 + Math.random()*0.2);
-          const heading = Math.floor(Math.random()*360);
-
-          // Insert live position
-          const { error: err1 } = await supabase
-            .from("bus_positions")
-            .insert([{ bus_id: bus.id, lat, lon, speed, heading }]);
-          if(err1) log("Insert pos err: " + JSON.stringify(err1));
-
-          // Occasionally send a simulated road_health aggregate for this segment
-          aggregateCounter++;
-          if(aggregateCounter % 5 === 0){
-            // create a segment id using route + floor(prog*100)
-            const segId = bus.routeId + "-" + Math.floor(bus.prog*100);
-            // randomize score -> color
-            const score = Math.max(10, Math.min(100, Math.floor(100 - (Math.random()*80))));
-            const color = score < 40 ? 'red' : score < 70 ? 'yellow' : 'green';
-            const { error: err2 } = await supabase
-              .from("road_health")
-              .insert([{
-                segment_id: segId,
-                route_id: bus.routeId,
-                lat, lon, color, score, samples_count: 1, median_peak: (Math.random()*3).toFixed(2)
-              }]);
-            if(err2) log("Insert road err: " + JSON.stringify(err2));
-          }
-
-        } // for buses
-        log("Sent batch at " + new Date().toLocaleTimeString());
-      } catch(e){
-        log("Exception: " + e.message);
+    // Capture accelerometer
+    window.addEventListener("devicemotion", (event) => {
+      if (event.accelerationIncludingGravity) {
+        motionData = {
+          x: event.accelerationIncludingGravity.x || 0,
+          y: event.accelerationIncludingGravity.y || 0,
+          z: event.accelerationIncludingGravity.z || 0,
+        };
       }
-    }, 1000);
+    });
 
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-  };
+    // Start collecting
+    document.getElementById("start").onclick = async () => {
+      collecting = true;
+      document.getElementById("start").style.display = "none";
+      document.getElementById("stop").style.display = "inline-block";
+      document.getElementById("log").textContent = "Collecting data...";
 
-  stopBtn.onclick = () => {
-    if(intervalId) clearInterval(intervalId);
-    intervalId = null;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    log("Simulation stopped.");
-  };
+      watchId = navigator.geolocation.watchPosition(async (pos) => {
+        if (!collecting) return;
 
-})();
-</script>
+        const payload = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          speed: pos.coords.speed || 0,
+          accel_x: motionData.x,
+          accel_y: motionData.y,
+          accel_z: motionData.z,
+          collected_at: new Date().toISOString(),
+          source: "bus"
+        };
+
+        try {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/road_data`, {
+            method: "POST",
+            headers: {
+              apikey: SERVICE_KEY,
+              Authorization: `Bearer ${SERVICE_KEY}`,
+              "Content-Type": "application/json",
+              Prefer: "return=minimal"
+            },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.ok) {
+            document.getElementById("log").textContent =
+              `Sent: ${JSON.stringify(payload, null, 2)}`;
+          } else {
+            console.error(await res.text());
+          }
+        } catch (err) {
+          console.error(err);
+          document.getElementById("log").textContent = "Error sending data!";
+        }
+      }, (err) => {
+        console.error("GPS error:", err);
+        alert("Enable GPS for data collection!");
+      }, { enableHighAccuracy: true });
+    };
+
+    // Stop collecting
+    document.getElementById("stop").onclick = () => {
+      collecting = false;
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+      document.getElementById("start").style.display = "inline-block";
+      document.getElementById("stop").style.display = "none";
+      document.getElementById("log").textContent = "Stopped.";
+    };
+  </script>
 </body>
 </html>
