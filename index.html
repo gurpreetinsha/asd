@@ -14,21 +14,21 @@
 </head>
 <body>
   <h1>🚌 Bus Data Collector</h1>
-  <p>This app will capture GPS + accelerometer data every few seconds and send it to Supabase.</p>
+  <p>This app captures GPS + accelerometer data and sends it to Supabase.</p>
   <button id="start">Start Collecting</button>
   <button id="stop">Stop</button>
   <div id="log">Idle...</div>
 
   <script type="module">
-    // === CONFIG ===
+    // === Supabase Config ===
     const SUPABASE_URL = "https://jnjhkmlvfmynxyjypyie.supabase.co";
-    const SERVICE_KEY = "YOUR_SERVICE_ROLE_KEY"; // ⚠️ Replace with service_role key
+    const API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuamhrbWx2Zm15bnh5anlweWllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyNTA4MjMsImV4cCI6MjA3MzgyNjgyM30.Xp1Y3UvqQhbuxP3KV_1dtW8Zff-yy0fA94G5O3wecOo";
 
     let collecting = false;
     let watchId = null;
     let motionData = { x:0, y:0, z:0 };
 
-    // Capture accelerometer
+    // Accelerometer
     window.addEventListener("devicemotion", (event) => {
       if (event.accelerationIncludingGravity) {
         motionData = {
@@ -39,8 +39,8 @@
       }
     });
 
-    // Start collecting
-    document.getElementById("start").onclick = async () => {
+    // Start
+    document.getElementById("start").onclick = () => {
       collecting = true;
       document.getElementById("start").style.display = "none";
       document.getElementById("stop").style.display = "inline-block";
@@ -64,8 +64,8 @@
           const res = await fetch(`${SUPABASE_URL}/rest/v1/road_data`, {
             method: "POST",
             headers: {
-              apikey: SERVICE_KEY,
-              Authorization: `Bearer ${SERVICE_KEY}`,
+              apikey: API_KEY,
+              Authorization: `Bearer ${API_KEY}`,
               "Content-Type": "application/json",
               Prefer: "return=minimal"
             },
@@ -74,21 +74,19 @@
 
           if (res.ok) {
             document.getElementById("log").textContent =
-              `Sent: ${JSON.stringify(payload, null, 2)}`;
+              `Sent:\n${JSON.stringify(payload, null, 2)}`;
           } else {
-            console.error(await res.text());
+            document.getElementById("log").textContent = "❌ Error: " + await res.text();
           }
         } catch (err) {
-          console.error(err);
-          document.getElementById("log").textContent = "Error sending data!";
+          document.getElementById("log").textContent = "❌ Error: " + err.message;
         }
       }, (err) => {
-        console.error("GPS error:", err);
-        alert("Enable GPS for data collection!");
+        alert("GPS error: " + err.message);
       }, { enableHighAccuracy: true });
     };
 
-    // Stop collecting
+    // Stop
     document.getElementById("stop").onclick = () => {
       collecting = false;
       if (watchId) navigator.geolocation.clearWatch(watchId);
